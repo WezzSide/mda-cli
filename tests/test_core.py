@@ -362,3 +362,114 @@ def test_process_job_unchanged_result(
     assert result.action == "unchanged"
     assert result.changed is False
     assert result.backup_path is None
+
+
+def _in_place_job(tmp_path: Path) -> tuple[Path, Job]:
+    vault = tmp_path / "Vault"
+    (vault / ".obsidian").mkdir(parents=True)
+    src = vault / "area" / "note.md"
+    src.parent.mkdir()
+    src.write_text("# Title\n", encoding="utf-8")
+    return vault, Job(src=src, dst=src)
+
+
+def test_process_job_in_place_backs_up_outside_vault(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    vault, job = _in_place_job(tmp_path)
+    backups = tmp_path / "backups"
+    monkeypatch.setattr("mda_cli.core.restructure", lambda *args, **kwargs: "# Changed\n")
+    seen: list[tuple[Path, str, str]] = []
+
+    def confirm(dst: Path, old: str, new: str) -> bool:
+        seen.append((dst, old, new))
+        return True
+
+    result = process_job(
+        job,
+        object(),
+        model="claude-test",
+        max_tokens=32,
+        system="sys",
+        progress=False,
+        backup_in_place=True,
+        backup_dir=backups,
+        confirm=confirm,
+    )
+
+    assert result.action == "wrote"
+    assert seen == [(job.src, "# Title\n", "# Changed\n")]
+    assert job.src.read_text(encoding="utf-8") == "# Changed\n"
+    assert result.backup_path is not None
+    assert backups in result.backup_path.parents
+    assert vault not in result.backup_path.parents
+    assert result.backup_path.parent.parts[-2:] == ("Vault", "area")
+    assert result.backup_path.read_text(encoding="utf-8") == "# Title\n"
+    assert sorted(p.name for p in job.src.parent.iterdir()) == ["note.md"]
+
+
+def test_process_job_in_place_declined_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, job = _in_place_job(tmp_path)
+    backups = tmp_path / "backups"
+    monkeypatch.setattr("mda_cli.core.restructure", lambda *args, **kwargs: "# Changed\n")
+
+    result = process_job(
+        job,
+        object(),
+        model="claude-test",
+        max_tokens=32,
+        system="sys",
+        progress=False,
+        backup_in_place=True,
+        backup_dir=backups,
+        confirm=lambda dst, old, new: False,
+    )
+
+    assert result.ok is True
+    assert result.action == "declined"
+    assert result.changed is False
+    assert job.src.read_text(encoding="utf-8") == "# Title\n"
+    assert not backups.exists()
+
+
+def test_process_job_in_place_refuses_when_source_changed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, job = _in_place_job(tmp_path)
+
+    def fake_restructure(*args: object, **kwargs: object) -> str:
+        job.src.write_text("# Edited by the user meanwhile\n", encoding="utf-8")
+        return "# Changed\n"
+
+    monkeypatch.setattr("mda_cli.core.restructure", fake_restructure)
+
+    result = process_job(
+        job,
+        object(),
+        model="claude-test",
+        max_tokens=32,
+        system="sys",
+        progress=False,
+        backup_in_place=True,
+        backup_dir=tmp_path / "backups",
+    )
+
+    assert result.ok is False
+    assert "changed since it was read" in (result.error or "")
+    assert job.src.read_text(encoding="utf-8") == "# Edited by the user meanwhile\n"
+
+
+def test_resolve_backup_dir_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from mda_cli.core import DEFAULT_BACKUP_DIR, resolve_backup_dir
+
+    monkeypatch.delenv("MDA_BACKUP_DIR", raising=False)
+    assert resolve_backup_dir() == DEFAULT_BACKUP_DIR
+    assert DEFAULT_BACKUP_DIR == Path.home() / "home" / "backups-obsidian"
+    monkeypatch.setenv("MDA_BACKUP_DIR", str(tmp_path / "env"))
+    assert resolve_backup_dir() == tmp_path / "env"
+    assert resolve_backup_dir(tmp_path / "cli") == tmp_path / "cli"

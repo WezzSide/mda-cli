@@ -10,12 +10,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 
 from mda_cli.core import (
     DEFAULT_API_TIMEOUT,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
+    ConfirmWrite,
     friendly_api_message as _friendly_anthropic,
     strip_outer_fence,
 )
@@ -436,9 +438,17 @@ def process_job_with_provider(
     progress_writer: Callable[[str], None] | None = None,
     max_attempts: int = 3,
     backup_in_place: bool = False,
+    backup_dir: Path | None = None,
+    confirm: ConfirmWrite | None = None,
 ):
     """Same contract as ``core.process_job`` but provider-aware."""
-    from mda_cli.core import JobResult, read_markdown_text, write_output_text
+    from mda_cli.core import (
+        JobResult,
+        WriteDeclined,
+        read_markdown_text,
+        sha256_hex,
+        write_output_text,
+    )
 
     def _emit(msg: str) -> None:
         if log is not None:
@@ -448,6 +458,7 @@ def process_job_with_provider(
 
     _emit(f"-> {job.src}")
     raw = read_markdown_text(job.src)
+    src_sha256 = sha256_hex(job.src.read_bytes())
     bytes_in = len(raw.encode("utf-8"))
     if not raw.strip():
         _emit(f"   skip (empty): {job.src}")
@@ -492,11 +503,24 @@ def process_job_with_provider(
         )
 
     output = strip_outer_fence(output)
+    in_place = job.src.resolve() == job.dst.resolve()
     try:
         changed, backup_path, bytes_out = write_output_text(
             job.dst,
             output,
-            create_backup=backup_in_place and job.src.resolve() == job.dst.resolve(),
+            create_backup=backup_in_place and in_place,
+            backup_dir=backup_dir if in_place else None,
+            confirm=confirm if in_place else None,
+            expected_sha256=src_sha256 if in_place else None,
+        )
+    except WriteDeclined:
+        _emit(f"   declined (not written): {job.dst}")
+        return JobResult(
+            job=job,
+            ok=True,
+            action="declined",
+            changed=False,
+            bytes_in=bytes_in,
         )
     except OSError as e:
         msg = f"write failed: {e}"

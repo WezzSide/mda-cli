@@ -105,7 +105,7 @@ Process paths from the command line without the UI:
 mda path\to\file.md
 mda path\to\vault -r --max-files 10 -q
 mda path\to\vault --dry-run
-mda path\to\file.md --in-place --backup
+mda path\to\file.md --in-place
 ```
 
 Optional environment variables: `MDA_SKILL` (skill id), `MDA_SKILL_DIR` (explicit skill folder), `MDA_EXTENSIONS`, `MDA_MODEL`, `MDA_MAX_TOKENS`, `MDA_API_TIMEOUT`.
@@ -114,8 +114,10 @@ Optional environment variables: `MDA_SKILL` (skill id), `MDA_SKILL_DIR` (explici
 
 ### Safe overwrite workflow
 
-- `--in-place` overwrites the source file.
-- `--backup` is available only with `--in-place` in batch mode and writes a sibling backup before replacing the file.
+- `--in-place` writes the result directly to the source file, at its own path. For each file it prints a diff and asks `Write these changes to <path>? [y/N]`; nothing is written without a yes. Pass `--yes` only when the content has already been confirmed. Without a terminal on stdin, `--in-place` refuses to run unless `--yes` is given.
+- Before every in-place overwrite the original is copied to `<backup dir>/<YYYYMMDD>/<vault name>/<path in vault>.<sha256[:8]>.bak`, outside the vault. Backup dir: `--backup-dir` → `MDA_BACKUP_DIR` → `~/home/backups-obsidian`. The vault is the nearest parent folder containing `.obsidian`.
+- An in-place write is refused when the file changed after it was read, and the written file is read back and compared with the confirmed text.
+- `--backup` is a deprecated no-op (in-place always backs up). The TUI does not run in-place mode, because it cannot show the per-file diff yet.
 - Generated outputs are written atomically. If the process fails during write, the original destination file is left in place.
 - `--json-lines` now includes `action`, `changed`, `bytes_in`, `bytes_out`, and `backup_path` fields.
 

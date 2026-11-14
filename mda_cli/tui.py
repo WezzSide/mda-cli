@@ -616,7 +616,12 @@ class MdaNavigatorApp(App[None]):
         out_dir: Path | None = None
         in_place = False
         if self.output_mode == "in_place":
-            in_place = True
+            # In-place writes need a per-file diff confirmation, which this UI cannot show yet.
+            self.log_msg(
+                "[yellow]In-place needs a diff confirmation per file. Run "
+                "`mda --in-place <file-or-folder>` in a terminal, or pick another output mode.[/]"
+            )
+            return
         elif self.output_mode == "out_dir":
             raw = self.query_one("#out-dir", Input).value.strip()
             if not raw:
