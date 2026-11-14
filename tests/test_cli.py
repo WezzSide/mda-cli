@@ -172,3 +172,45 @@ def test_subprocess_batch_fails_without_api_key(tmp_path: Path, skill_dir: Path)
     )
     assert r.returncode != 0
     assert "ANTHROPIC_API_KEY" in (r.stderr + r.stdout)
+
+
+def test_main_rejects_yes_without_in_place() -> None:
+    with pytest.raises(SystemExit):
+        main(["--yes"])
+
+
+def test_subprocess_in_place_needs_terminal_or_yes(tmp_path: Path, skill_dir: Path) -> None:
+    md = tmp_path / "doc.md"
+    md.write_text("# Hello", encoding="utf-8")
+    env = os.environ.copy()
+    env["MDA_SKILL_DIR"] = str(skill_dir)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("OPENROUTER_API_KEY", None)
+    r = subprocess.run(
+        [sys.executable, "-m", "mda_cli", str(md), "--in-place"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode != 0
+    assert "--yes" in r.stderr
+    assert md.read_text(encoding="utf-8") == "# Hello"
+
+
+def test_confirm_in_place_write_shows_diff_and_reads_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from mda_cli.cli import confirm_in_place_write
+
+    answers = iter(["y", "", "nee"])
+    monkeypatch.setattr("builtins.input", lambda: next(answers))
+    dst = tmp_path / "n.md"
+    assert confirm_in_place_write(dst, "a\n", "b\n") is True
+    assert confirm_in_place_write(dst, "a\n", "b\n") is False
+    assert confirm_in_place_write(dst, "a\n", "b\n") is False
+    err = capsys.readouterr().err
+    assert "-a" in err and "+b" in err and str(dst) in err

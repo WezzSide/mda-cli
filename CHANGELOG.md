@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- TUI: open one file browser directly; Enter opens folders or runs MDA on the highlighted file, without the separate U folder-confirmation step.
+- TUI: show primary navigation controls in the footer and put advanced shortcuts behind `?`; show the output-folder field only when relevant.
+- TUI: keep processing responsive, prevent overlapping runs, and remember the last browsed folder on exit.
+- `--in-place` now shows a diff and asks for confirmation per file (`--yes` skips the prompt; required when stdin is not a terminal). Declined files are reported as `declined` and left untouched.
+- In-place writes always back up the original outside the vault: `--backup-dir` → `MDA_BACKUP_DIR` → `~/home/backups-obsidian`, as `<YYYYMMDD>/<vault>/<path>.<sha256[:8]>.bak`. `--backup` is a deprecated no-op; no sibling `.bak` files are created by the CLI any more.
+- In-place writes are refused if the source changed since it was read, and the written bytes are verified against the confirmed text.
+- TUI: in-place output mode is blocked with a message until it can show the per-file diff.
+
 ## [0.2.9]
 
 - TUI: live read-only preview of the highlighted supported file (`.md`, `.txt`, `.pdf`, `.docx`, `.doc` listing).

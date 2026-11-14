@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from mda_cli.core import (
     list_skill_scripts,
     load_system_prompt,
     print_json_line,
+    resolve_backup_dir,
     resolve_skill_dir,
     resolve_skill_id,
     resolve_skill_script,
@@ -121,6 +123,25 @@ def run_skill_script(
     return 0
 
 
+def confirm_in_place_write(dst: Path, old_text: str, new_text: str) -> bool:
+    """Show the diff for ``dst`` on stderr and ask before overwriting it."""
+    diff = difflib.unified_diff(
+        old_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile=f"{dst} (current)",
+        tofile=f"{dst} (proposed)",
+    )
+    for line in diff:
+        sys.stderr.write(line if line.endswith("\n") else line + "\n")
+    sys.stderr.write(f"\nWrite these changes to {dst}? [y/N] ")
+    sys.stderr.flush()
+    try:
+        answer = input()
+    except EOFError:
+        return False
+    return answer.strip().lower() in ("y", "yes", "j", "ja")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mda",
@@ -149,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Supported file or directory (.md, .pdf, .docx, .doc, .txt) for batch mode. "
-            "Omit to open the interactive UI, or pass with --tui as the folder-picker start path."
+            "Omit to open the interactive browser, or pass with --tui as its starting path."
         ),
     )
     p.add_argument(
@@ -157,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-T",
         action="store_true",
         help=(
-            "Open the interactive terminal UI (folder picker, then file browser). "
+            "Open the interactive file browser (Enter opens folders or runs MDA on a file). "
             "This is the default when no target path is given."
         ),
     )
@@ -177,7 +198,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--in-place",
         action="store_true",
-        help="Overwrite each source file with the restructured output.",
+        help=(
+            "Write the result directly to each source file. Shows a diff and asks for "
+            "confirmation per file (skip with --yes); the original is always backed up "
+            "outside the vault first (see --backup-dir)."
+        ),
+    )
+    p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="With --in-place: write without the per-file prompt (content already confirmed).",
+    )
+    p.add_argument(
+        "--backup-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Where --in-place saves the original before overwriting "
+            "(default: MDA_BACKUP_DIR or ~/home/backups-obsidian)."
+        ),
     )
     p.add_argument(
         "--dry-run",
@@ -255,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--backup",
         action="store_true",
-        help="When used with --in-place in batch mode, keep a sibling .bak copy before overwrite.",
+        help="Deprecated no-op: --in-place always backs up to the backup dir before overwrite.",
     )
     p.add_argument(
         "-q",
@@ -336,6 +376,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--in-place and --out-dir are mutually exclusive")
     if args.backup and not args.in_place:
         parser.error("--backup requires --in-place")
+    if args.yes and not args.in_place:
+        parser.error("--yes requires --in-place")
+    if args.backup_dir is not None and not args.in_place:
+        parser.error("--backup-dir requires --in-place")
 
     max_attempts = 1 if args.no_retry else max(1, args.max_retries)
 
@@ -399,6 +443,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{j.src}  ->  {j.dst}")
         return 0
 
+    backup_dir = resolve_backup_dir(args.backup_dir) if args.in_place else None
+    confirm = None
+    if args.in_place and not args.yes:
+        if not sys.stdin.isatty():
+            parser.error(
+                "--in-place asks for confirmation per file and stdin is not a terminal; "
+                "run it interactively, or pass --yes when the content is already confirmed"
+            )
+        confirm = confirm_in_place_write
+    if backup_dir is not None and not args.json_lines:
+        print(f"In-place backups: {backup_dir}", file=sys.stderr)
+
     provider = resolve_provider_name(cli_provider=args.provider)
     ensure_api_credentials(provider)
 
@@ -424,7 +480,9 @@ def main(argv: list[str] | None = None) -> int:
                 system=system,
                 progress=not args.quiet,
                 max_attempts=max_attempts,
-                backup_in_place=args.backup,
+                backup_in_place=args.in_place,
+                backup_dir=backup_dir,
+                confirm=confirm,
             )
             if args.json_lines:
                 print_json_line(job_result_record(result, provider=ctx.provider))

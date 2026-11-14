@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from importlib.resources import files as importlib_files
 from pathlib import Path
 from typing import Literal
@@ -45,6 +47,8 @@ except ImportError:
 DEFAULT_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_MAX_TOKENS = 16_000
 DEFAULT_API_TIMEOUT = 600.0
+# In-place writes always snapshot the original here first (override: MDA_BACKUP_DIR / --backup-dir).
+DEFAULT_BACKUP_DIR = Path.home() / "home" / "backups-obsidian"
 LARGE_FILE_BYTES = 400_000
 LARGE_BATCH_TOTAL_BYTES = 2_000_000
 
@@ -163,7 +167,7 @@ class Job:
 class JobResult:
     job: Job
     ok: bool
-    action: Literal["wrote", "unchanged", "skipped-empty", "failed"]
+    action: Literal["wrote", "unchanged", "skipped-empty", "declined", "failed"]
     error: str | None = None
     changed: bool = False
     backup_path: Path | None = None
@@ -484,6 +488,47 @@ def next_backup_path(path: Path) -> Path:
         n += 1
 
 
+class WriteDeclined(Exception):
+    """The user did not confirm an in-place overwrite; nothing was written."""
+
+
+ConfirmWrite = Callable[[Path, str, str], bool]
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def resolve_backup_dir(cli_backup_dir: Path | None = None) -> Path:
+    """Backup root for in-place writes: ``--backup-dir`` → ``MDA_BACKUP_DIR`` → default."""
+    if cli_backup_dir is not None:
+        return Path(cli_backup_dir).expanduser()
+    env = os.environ.get("MDA_BACKUP_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return DEFAULT_BACKUP_DIR
+
+
+def find_vault_root(path: Path) -> Path | None:
+    """Nearest ancestor of ``path`` that holds an ``.obsidian`` folder, if any."""
+    for parent in path.resolve().parents:
+        if (parent / ".obsidian").is_dir():
+            return parent
+    return None
+
+
+def central_backup_path(path: Path, backup_dir: Path, data: bytes) -> Path:
+    """``<backup_dir>/<YYYYMMDD>/<vault>/<path in vault>.<sha256[:8]>.bak`` (outside the vault)."""
+    resolved = path.resolve()
+    root = find_vault_root(resolved)
+    if root is not None:
+        rel = Path(root.name) / resolved.relative_to(root)
+    else:
+        rel = Path(resolved.parent.name or "files") / resolved.name
+    day = datetime.now().strftime("%Y%m%d")
+    return backup_dir / day / rel.parent / f"{rel.name}.{sha256_hex(data)[:8]}.bak"
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` atomically on the destination filesystem."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -520,8 +565,17 @@ def write_output_text(
     text: str,
     *,
     create_backup: bool = False,
+    backup_dir: Path | None = None,
+    confirm: ConfirmWrite | None = None,
+    expected_sha256: str | None = None,
 ) -> tuple[bool, Path | None, int]:
-    """Persist output text safely, returning ``(changed, backup_path, bytes_out)``."""
+    """Persist output text safely, returning ``(changed, backup_path, bytes_out)``.
+
+    When overwriting an existing file: ``expected_sha256`` aborts if the file changed since it
+    was read, ``confirm(dst, old_text, new_text)`` must return true (else ``WriteDeclined``),
+    and ``create_backup`` snapshots the original to ``backup_dir`` (sibling ``.bak`` when no
+    ``backup_dir`` is given). The written bytes are read back and compared.
+    """
     bytes_out = len(text.encode("utf-8"))
     if dst.exists() and dst.is_file():
         try:
@@ -533,11 +587,29 @@ def write_output_text(
             pass
 
     backup_path: Path | None = None
-    if create_backup and dst.exists() and dst.is_file():
-        backup_path = next_backup_path(dst)
-        shutil.copy2(dst, backup_path)
+    if dst.exists() and dst.is_file():
+        original = dst.read_bytes()
+        if expected_sha256 is not None and sha256_hex(original) != expected_sha256:
+            raise OSError(f"{dst} changed since it was read; not overwritten")
+        if confirm is not None:
+            old_text = read_markdown_text(dst)
+            if not confirm(dst, old_text, text):
+                raise WriteDeclined(str(dst))
+            if sha256_hex(dst.read_bytes()) != sha256_hex(original):
+                raise OSError(f"{dst} changed while waiting for confirmation; not overwritten")
+        if create_backup:
+            if backup_dir is not None:
+                backup_path = central_backup_path(dst, backup_dir, original)
+                backup_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                backup_path = next_backup_path(dst)
+            shutil.copy2(dst, backup_path)
+            if backup_path.read_bytes() != original:
+                raise OSError(f"backup verification failed: {backup_path}")
 
     _write_text_atomic(dst, text)
+    if dst.read_bytes() != text.encode("utf-8"):
+        raise OSError(f"written content does not match the confirmed content: {dst}")
     return True, backup_path, bytes_out
 
 
@@ -599,6 +671,8 @@ def process_job(
     progress_writer: Callable[[str], None] | None = None,
     max_attempts: int = 3,
     backup_in_place: bool = False,
+    backup_dir: Path | None = None,
+    confirm: ConfirmWrite | None = None,
 ) -> JobResult:
     def _emit(msg: str) -> None:
         if log is not None:
@@ -619,6 +693,7 @@ def process_job(
         )
 
     bytes_in = len(raw.encode("utf-8"))
+    src_sha256 = sha256_hex(job.src.read_bytes())
     if not raw.strip():
         _emit(f"   skip (empty): {job.src}")
         return JobResult(
@@ -662,11 +737,24 @@ def process_job(
         )
 
     output = strip_outer_fence(output)
+    in_place = job.src.resolve() == job.dst.resolve()
     try:
         changed, backup_path, bytes_out = write_output_text(
             job.dst,
             output,
-            create_backup=backup_in_place and job.src.resolve() == job.dst.resolve(),
+            create_backup=backup_in_place and in_place,
+            backup_dir=backup_dir if in_place else None,
+            confirm=confirm if in_place else None,
+            expected_sha256=src_sha256 if in_place else None,
+        )
+    except WriteDeclined:
+        _emit(f"   declined (not written): {job.dst}")
+        return JobResult(
+            job=job,
+            ok=True,
+            action="declined",
+            changed=False,
+            bytes_in=bytes_in,
         )
     except OSError as e:
         msg = f"write failed: {e}"
