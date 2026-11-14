@@ -74,22 +74,22 @@ Synonyms everywhere: `mda-cli`, `mda-tui`.
    mda
    ```
 
-4. **Pick a folder** (vault or project root):
-   - Use **↑/↓** or **j/k** to move
-   - **Enter** opens a folder
-   - **Backspace** goes up
-   - **H** jumps to your home folder
-   - **U** = **Use this folder** when you are in the right place
-   - **I** toggles the live document preview pane (highlight a supported file to see original content)
-   - **Q** quits
+4. **Browse and run from one screen**:
+   - Use **↑/↓** or **j/k** to highlight a folder or file.
+   - **Enter on a folder** opens it and immediately lists its folders and files.
+   - **Enter on a supported file** runs MDA for that file. No separate folder confirmation or selection step is needed.
+   - **Backspace** opens the parent folder; **Q** quits.
+   - The default output is a separate `*.restructured.md` file next to the source.
 
-5. **Select files** (`.md`, `.pdf`, `.docx`, `.txt`, …) and run:
-   - **Space** toggles selection on supported files (Kind column shows extension)
-   - **A** selects supported files recursively under the current folder
-   - **P** runs MDA on everything selected
-   - **O** cycles output mode (sibling file, in-place, or output folder)
+5. **Press ? for more options** when needed:
+   - **Space** marks files; **P** runs the marked batch. **Enter** always runs only the highlighted file.
+   - **A** marks supported files recursively under the current folder.
+   - **Ctrl+J** jumps to a path, **F** filters names, **H** opens home, and **V** toggles hidden files.
+   - **I** toggles the preview; **O** changes the output mode. The output-folder input appears only when that mode is selected; **G** focuses it.
 
-Your last chosen folder is remembered for next time (saved under `%APPDATA%\mda-cli\config.json` on Windows).
+Processing runs in the background so the browser remains responsive. Repeated run commands do not start another job while one is already running. Unsupported files and configuration failures show a message in the log.
+
+Your last browsed folder is remembered when you close MDA (saved under `%APPDATA%\mda-cli\config.json` on Windows).
 
 ## Install check
 

@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Supported file or directory (.md, .pdf, .docx, .doc, .txt) for batch mode. "
-            "Omit to open the interactive UI, or pass with --tui as the folder-picker start path."
+            "Omit to open the interactive browser, or pass with --tui as its starting path."
         ),
     )
     p.add_argument(
@@ -178,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-T",
         action="store_true",
         help=(
-            "Open the interactive terminal UI (folder picker, then file browser). "
+            "Open the interactive file browser (Enter opens folders or runs MDA on a file). "
             "This is the default when no target path is given."
         ),
     )
